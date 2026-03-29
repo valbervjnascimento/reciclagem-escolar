@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import useAuth from "../hooks/useAuth";
 
@@ -24,8 +24,9 @@ export default function Painel() {
   const [nomeTurma, setNomeTurma] = useState("");
   const [alunos, setAlunos] = useState([]);
   const [novoAluno, setNovoAluno] = useState("");
-  const [alunoId, setAlunoId] = useState("");
+  const [editandoAlunoId, setEditandoAlunoId] = useState(null);
 
+  const [alunoId, setAlunoId] = useState("");
   const [plastico, setPlastico] = useState("");
   const [aluminio, setAluminio] = useState("");
   const [frasco, setFrasco] = useState("");
@@ -47,14 +48,17 @@ export default function Painel() {
   }, [user]);
 
   const carregarTurma = async () => {
-    const q = query(collection(db, "turmas"), where("professorId", "==", user.uid));
-    const dados = await getDocs(q);
+    try {
+      const q = query(collection(db, "turmas"), where("professorId", "==", user.uid));
+      const dados = await getDocs(q);
 
-    if (!dados.empty) {
-      const turmaData = { id: dados.docs[0].id, ...dados.docs[0].data() };
-      setTurma(turmaData);
-      carregarAlunos(turmaData.id);
-      carregarRegistros(turmaData.id);
+      if (!dados.empty) {
+        const turmaData = { id: dados.docs[0].id, ...dados.docs[0].data() };
+        setTurma(turmaData);
+        await Promise.all([carregarAlunos(turmaData.id), carregarRegistros(turmaData.id)]);
+      }
+    } catch (error) {
+      console.error("Erro ao carregar turma:", error);
     }
   };
 
@@ -70,34 +74,64 @@ export default function Painel() {
     setRegistros(dados.docs.map(doc => ({ id: doc.id, ...doc.data() })));
   };
 
-  const criarTurma = async () => {
-    if (!nomeTurma) return;
-    const docRef = await addDoc(collection(db, "turmas"), {
-      nome: nomeTurma,
-      professorId: user.uid
-    });
-    setTurma({ id: docRef.id, nome: nomeTurma });
-    setNomeTurma("");
+  // Funções de Gerenciamento de Alunos (CRUD)
+  const salvarAluno = async () => {
+    if (!novoAluno.trim()) return;
+    try {
+      if (editandoAlunoId) {
+        await updateDoc(doc(db, "alunos", editandoAlunoId), { nome: novoAluno });
+        setEditandoAlunoId(null);
+      } else {
+        await addDoc(collection(db, "alunos"), {
+          nome: novoAluno,
+          turmaId: turma.id
+        });
+      }
+      setNovoAluno("");
+      await carregarAlunos(turma.id);
+    } catch (e) {
+      alert("Erro ao salvar aluno.");
+    }
   };
 
-  const adicionarAluno = async () => {
-    if (!novoAluno) return;
-    await addDoc(collection(db, "alunos"), {
-      nome: novoAluno,
-      turmaId: turma.id
-    });
-    setNovoAluno("");
-    carregarAlunos(turma.id);
+  const deletarAluno = async (id) => {
+    if (confirm("Deseja remover este aluno? Os registros de coleta permanecerão no histórico.")) {
+      await deleteDoc(doc(db, "alunos", id));
+      await carregarAlunos(turma.id);
+    }
   };
 
-  const registrarOuEditar = async () => {
+  // Cálculos Otimizados com useMemo
+  const stats = useMemo(() => {
+    const p = registros.reduce((a, b) => a + (Number(b.plastico) || 0), 0);
+    const al = registros.reduce((a, b) => a + (Number(b.aluminio) || 0), 0);
+    const f = registros.reduce((a, b) => a + (Number(b.frasco) || 0), 0);
+    return { p, al, f, total: p + al + f };
+  }, [registros]);
+
+  const ranking = useMemo(() => {
+    return alunos.map(aluno => {
+      const total = registros
+        .filter(r => r.alunoId === aluno.id)
+        .reduce((s, r) => s + (Number(r.plastico) || 0) + (Number(r.aluminio) || 0) + (Number(r.frasco) || 0), 0);
+      return { nome: aluno.nome, total };
+    }).sort((a, b) => b.total - a.total);
+  }, [alunos, registros]);
+
+  const registrosFiltrados = useMemo(() => {
+    return registros.filter(reg => {
+      const nomeAluno = alunos.find(a => a.id === reg.alunoId)?.nome || "Removido";
+      return nomeAluno.toLowerCase().includes(busca.toLowerCase());
+    }).reverse();
+  }, [registros, alunos, busca]);
+
+  const registrarOuEditarColeta = async () => {
     if (!alunoId) return alert("Selecione um aluno");
-
     const dados = {
       alunoId,
       turmaId: turma.id,
       professorId: user.uid,
-      data: Date.now(), // Aqui salvamos a data atual
+      data: editandoId ? registros.find(r => r.id === editandoId).data : Date.now(),
       plastico: Number(plastico) || 0,
       aluminio: Number(aluminio) || 0,
       frasco: Number(frasco) || 0
@@ -110,39 +144,11 @@ export default function Painel() {
       } else {
         await addDoc(collection(db, "registros"), dados);
       }
-      setPlastico("");
-      setAluminio("");
-      setFrasco("");
-      setAlunoId("");
-      carregarRegistros(turma.id);
+      setPlastico(""); setAluminio(""); setFrasco(""); setAlunoId("");
+      await carregarRegistros(turma.id);
     } catch (e) {
-      alert("Erro ao salvar.");
+      alert("Erro ao salvar coleta.");
     }
-  };
-
-  const deletarRegistro = async (id) => {
-    if (confirm("Deseja realmente excluir este registro?")) {
-      await deleteDoc(doc(db, "registros", id));
-      carregarRegistros(turma.id);
-    }
-  };
-
-  const prepararEdicao = (reg) => {
-    setEditandoId(reg.id);
-    setAlunoId(reg.alunoId);
-    setPlastico(reg.plastico);
-    setAluminio(reg.aluminio);
-    setFrasco(reg.frasco);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const formatarData = (timestamp) => {
-    if (!timestamp) return "--/--/--";
-    const data = new Date(timestamp);
-    const dia = String(data.getDate()).padStart(2, '0');
-    const mes = String(data.getMonth() + 1).padStart(2, '0');
-    const ano = String(data.getFullYear()).slice(-2);
-    return `${dia}/${mes}/${ano}`;
   };
 
   const sair = async () => {
@@ -150,122 +156,74 @@ export default function Painel() {
     router.push("/login");
   };
 
-  const registrosFiltrados = registros.filter(reg => {
-    const nomeAluno = alunos.find(a => a.id === reg.alunoId)?.nome || "";
-    return nomeAluno.toLowerCase().includes(busca.toLowerCase());
-  });
-
-  const totalPlastico = registros.reduce((a, b) => a + (b.plastico || 0), 0);
-  const totalAluminio = registros.reduce((a, b) => a + (b.aluminio || 0), 0);
-  const totalFrasco = registros.reduce((a, b) => a + (b.frasco || 0), 0);
-
-  const ranking = alunos.map(aluno => {
-    const total = registros
-      .filter(r => r.alunoId === aluno.id)
-      .reduce((s, r) => s + ((r.plastico || 0) + (r.aluminio || 0) + (r.frasco || 0)), 0);
-    return { nome: aluno.nome, total };
-  }).sort((a, b) => b.total - a.total);
-
-  const [editandoAlunoId, setEditandoAlunoId] = useState(null);
-
-// Função para Deletar Aluno
-const deletarAluno = async (id) => {
-  if (confirm("Ao excluir o aluno, os registros de coleta dele continuarão no histórico, mas sem nome. Confirmar?")) {
-    await deleteDoc(doc(db, "alunos", id));
-    carregarAlunos(turma.id);
-  }
-};
-
-// Função para preparar a edição do nome
-const prepararEdicaoAluno = (aluno) => {
-  setEditandoAlunoId(aluno.id);
-  setNovoAluno(aluno.nome);
-};
-
-// Função para Salvar ou Atualizar Aluno
-const salvarAluno = async () => {
-  if (!novoAluno) return;
-  
-  if (editandoAlunoId) {
-    // Atualizar
-    await updateDoc(doc(db, "alunos", editandoAlunoId), { nome: novoAluno });
-    setEditandoAlunoId(null);
-  } else {
-    // Criar novo
-    await addDoc(collection(db, "alunos"), {
-      nome: novoAluno,
-      turmaId: turma.id
-    });
-  }
-  
-  setNovoAluno("");
-  carregarAlunos(turma.id);
-};
-
-  const dadosGrafico = [
-    { nome: "Plástico", valor: totalPlastico, color: "#3b82f6" },
-    { nome: "Alumínio", valor: totalAluminio, color: "#f59e0b" },
-    { nome: "Frasco", valor: totalFrasco, color: "#10b981" }
-  ];
-
   if (!mounted) return null;
-  if (loading) return <p style={{color: "#fff", padding: "20px"}}>Carregando...</p>;
-  if (!user) return null;
+  if (loading) return <div style={styles.loading}>Carregando EcoGestão...</div>;
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
+      <header style={styles.header}>
         <h1 style={styles.title}>🌎 EcoGestão Escolar</h1>
         <div style={styles.headerRight}>
-          <span style={styles.userInfo}>👨‍🏫 {user.email}</span>
+          <span style={styles.userInfo}>👨‍🏫 {user?.email}</span>
           <button style={styles.btnSair} onClick={sair}>Sair</button>
         </div>
-      </div>
+      </header>
 
       {!turma ? (
-        <div style={styles.card}>
-          <h2>Criar Turma</h2>
+        <div style={styles.cardCenter}>
+          <h2>Bem-vindo, Professor!</h2>
+          <p>Crie sua primeira turma para começar o projeto.</p>
           <input 
             style={styles.input}
-            placeholder="Nome da turma"
+            placeholder="Ex: 7º Ano A - 2026"
             value={nomeTurma} 
             onChange={(e) => setNomeTurma(e.target.value)} 
           />
-          <button style={styles.btnPrimary} onClick={criarTurma}>Criar Turma</button>
+          <button style={styles.btnPrimary} onClick={async () => {
+             if (!nomeTurma) return;
+             const docRef = await addDoc(collection(db, "turmas"), { nome: nomeTurma, professorId: user.uid });
+             setTurma({ id: docRef.id, nome: nomeTurma });
+          }}>Criar Turma</button>
         </div>
       ) : (
         <>
           <h2 style={styles.subtitle}>🏫 {turma.nome}</h2>
 
-          <div style={styles.gridCards}>
-            <div style={styles.cardHighlight}>♻️ Total: {totalPlastico + totalAluminio + totalFrasco}</div>
-            <div style={styles.card}>🧴 Plástico: {totalPlastico}</div>
-            <div style={styles.card}>🥫 Alumínio: {totalAluminio}</div>
-            <div style={styles.card}>🌸 Frasco: {totalFrasco}</div>
-          </div>
+          <section style={styles.gridCards}>
+            <div style={styles.cardHighlight}>♻️ Total Geral: {stats.total}</div>
+            <div style={{...styles.cardSimple, borderColor: "#3b82f6"}}>🧴 Plástico: {stats.p}</div>
+            <div style={{...styles.cardSimple, borderColor: "#f59e0b"}}>🥫 Alumínio: {stats.al}</div>
+            <div style={{...styles.cardSimple, borderColor: "#10b981"}}>🌸 Frasco: {stats.f}</div>
+          </section>
 
           <div style={styles.rowLayout}>
             <div style={{ flex: 2 }}>
               <div style={styles.card}>
-                <h3>📊 Estatísticas da Turma</h3>
-                <ResponsiveContainer width="100%" height={250}>
-                  <BarChart data={dadosGrafico}>
-                    <XAxis dataKey="nome" stroke="#94a3b8" />
-                    <YAxis stroke="#94a3b8" />
-                    <Tooltip contentStyle={{ backgroundColor: '#1E293B', border: 'none', borderRadius: '8px' }} />
-                    <Bar dataKey="valor">
-                      {dadosGrafico.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                <h3>📊 Materiais Coletados</h3>
+                <div style={{ width: '100%', height: 250 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={[
+                      { nome: "Plástico", valor: stats.p, color: "#3b82f6" },
+                      { nome: "Alumínio", valor: stats.al, color: "#f59e0b" },
+                      { nome: "Frasco", valor: stats.f, color: "#10b981" }
+                    ]}>
+                      <XAxis dataKey="nome" stroke="#94a3b8" />
+                      <YAxis stroke="#94a3b8" />
+                      <Tooltip contentStyle={{ backgroundColor: '#1E293B', border: 'none', borderRadius: '8px' }} />
+                      <Bar dataKey="valor" radius={[4, 4, 0, 0]}>
+                        {[1, 2, 3].map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={["#3b82f6", "#f59e0b", "#10b981"][index]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
             
             <div style={{ flex: 1 }}>
               <div style={styles.card}>
-                <h3>🏆 Ranking</h3>
+                <h3>🏆 Top 5 Alunos</h3>
                 {ranking.slice(0, 5).map((r, i) => (
                   <div key={i} style={styles.rankingItem}>
                     <span>{i + 1}º {r.nome}</span>
@@ -277,11 +235,11 @@ const salvarAluno = async () => {
           </div>
 
           <div style={styles.card}>
-            <h3>{editandoId ? "📝 Editar Registro" : "♻️ Nova Coleta"}</h3>
+            <h3>{editandoId ? "📝 Editar Registro" : "♻️ Registrar Nova Coleta"}</h3>
             <div style={styles.gridInputs}>
               <select style={styles.input} onChange={(e) => setAlunoId(e.target.value)} value={alunoId}>
                 <option value="">Selecione o aluno</option>
-                {alunos.map(a => (
+                {alunos.sort((a,b) => a.nome.localeCompare(b.nome)).map(a => (
                   <option key={a.id} value={a.id}>{a.nome}</option>
                 ))}
               </select>
@@ -290,19 +248,19 @@ const salvarAluno = async () => {
               <input style={styles.input} type="number" placeholder="Frasco" value={frasco} onChange={(e) => setFrasco(e.target.value)} />
             </div>
             <div style={styles.row}>
-              <button style={styles.btnPrimary} onClick={registrarOuEditar}>
-                {editandoId ? "Salvar Alterações" : "Registrar Coleta"}
+              <button style={styles.btnPrimary} onClick={registrarOuEditarColeta}>
+                {editandoId ? "Salvar Alterações" : "Confirmar Lançamento"}
               </button>
-              {editandoId && <button style={styles.btnSec} onClick={() => setEditandoId(null)}>Cancelar</button>}
+              {editandoId && <button style={styles.btnSec} onClick={() => {setEditandoId(null); setPlastico(""); setAluminio(""); setFrasco(""); setAlunoId("");}}>Cancelar</button>}
             </div>
           </div>
 
           <div style={styles.card}>
             <div style={styles.headerList}>
-              <h3>📑 Histórico de Lançamentos</h3>
+              <h3>📑 Histórico Recente</h3>
               <input 
                 style={styles.inputBusca} 
-                placeholder="🔍 Filtrar por aluno..." 
+                placeholder="🔍 Buscar aluno..." 
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
               />
@@ -316,20 +274,32 @@ const salvarAluno = async () => {
                     <th style={styles.th}>P</th>
                     <th style={styles.th}>A</th>
                     <th style={styles.th}>F</th>
-                    <th style={styles.th}>Ações</th>
+                    <th style={{...styles.th, textAlign: 'center'}}>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {registrosFiltrados.slice().reverse().map((reg) => (
+                  {registrosFiltrados.map((reg) => (
                     <tr key={reg.id} style={styles.tr}>
-                      <td style={{...styles.td, color: "#94a3b8"}}>{formatarData(reg.data)}</td>
+                      <td style={{...styles.td, color: "#94a3b8"}}>{new Date(reg.data).toLocaleDateString('pt-BR')}</td>
                       <td style={styles.td}>{alunos.find(a => a.id === reg.alunoId)?.nome || "Removido"}</td>
                       <td style={styles.td}>{reg.plastico}</td>
                       <td style={styles.td}>{reg.aluminio}</td>
                       <td style={styles.td}>{reg.frasco}</td>
-                      <td style={styles.td}>
-                        <button style={styles.btnActionEdit} onClick={() => prepararEdicao(reg)}>✏️</button>
-                        <button style={styles.btnActionDel} onClick={() => deletarRegistro(reg.id)}>🗑️</button>
+                      <td style={{...styles.td, textAlign: 'center'}}>
+                        <button style={styles.btnActionEdit} onClick={() => {
+                           setEditandoId(reg.id);
+                           setAlunoId(reg.alunoId);
+                           setPlastico(reg.plastico);
+                           setAluminio(reg.aluminio);
+                           setFrasco(reg.frasco);
+                           window.scrollTo({ top: 400, behavior: 'smooth' });
+                        }}>✏️</button>
+                        <button style={styles.btnActionDel} onClick={async () => {
+                           if(confirm("Excluir registro?")) {
+                             await deleteDoc(doc(db, "registros", reg.id));
+                             carregarRegistros(turma.id);
+                           }
+                        }}>🗑️</button>
                       </td>
                     </tr>
                   ))}
@@ -338,60 +308,31 @@ const salvarAluno = async () => {
             </div>
           </div>
 
-          {/* GERENCIAR ALUNOS (CRUD COMPLETO) */}
-<div style={styles.card}>
-  <h3>👨‍🎓 Gerenciar Alunos da Turma</h3>
-  <div style={styles.row}>
-    <input 
-      style={styles.input}
-      placeholder="Nome do aluno"
-      value={novoAluno} 
-      onChange={(e) => setNovoAluno(e.target.value)} 
-    />
-    <button style={styles.btnPrimary} onClick={salvarAluno}>
-      {editandoAlunoId ? "Atualizar" : "Adicionar"}
-    </button>
-    {editandoAlunoId && (
-      <button style={styles.btnSec} onClick={() => {setEditandoAlunoId(null); setNovoAluno("");}}>
-        Cancelar
-      </button>
-    )}
-  </div>
-
-  <div style={{ marginTop: "20px", maxHeight: "300px", overflowY: "auto" }}>
-    <table style={styles.table}>
-      <thead>
-        <tr>
-          <th style={styles.th}>Nome do Estudante</th>
-          <th style={{...styles.th, textAlign: "right"}}>Ações</th>
-        </tr>
-      </thead>
-      <tbody>
-        {alunos.sort((a, b) => a.nome.localeCompare(b.nome)).map(a => (
-          <tr key={a.id} style={styles.tr}>
-            <td style={styles.td}>{a.nome}</td>
-            <td style={{...styles.td, textAlign: "right"}}>
-              <button 
-                title="Editar Nome" 
-                style={styles.btnActionEdit} 
-                onClick={() => prepararEdicaoAluno(a)}
-              >
-                ✏️
+          <div style={styles.card}>
+            <h3>👨‍🎓 Gestão de Alunos</h3>
+            <div style={styles.row}>
+              <input 
+                style={styles.input}
+                placeholder="Nome completo do aluno"
+                value={novoAluno} 
+                onChange={(e) => setNovoAluno(e.target.value)} 
+              />
+              <button style={styles.btnPrimary} onClick={salvarAluno}>
+                {editandoAlunoId ? "Atualizar" : "Cadastrar"}
               </button>
-              <button 
-                title="Remover Aluno" 
-                style={styles.btnActionDel} 
-                onClick={() => deletarAluno(a.id)}
-              >
-                🗑️
-              </button>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-</div>
+            </div>
+            <div style={{maxHeight: '200px', overflowY: 'auto', marginTop: '15px'}}>
+              {alunos.sort((a,b) => a.nome.localeCompare(b.nome)).map(a => (
+                <div key={a.id} style={styles.listItem}>
+                  <span>{a.nome}</span>
+                  <div>
+                    <button style={styles.btnActionEdit} onClick={() => {setEditandoAlunoId(a.id); setNovoAluno(a.nome);}}>✏️</button>
+                    <button style={styles.btnActionDel} onClick={() => deletarAluno(a.id)}>🗑️</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       )}
     </div>
@@ -399,31 +340,34 @@ const salvarAluno = async () => {
 }
 
 const styles = {
-  container: { background: "#0F172A", minHeight: "100vh", padding: "30px", color: "#fff", fontFamily: "sans-serif" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" },
+  container: { background: "#0F172A", minHeight: "100vh", padding: "20px", color: "#fff", fontFamily: "'Inter', sans-serif" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px", borderBottom: "1px solid #1E293B", paddingBottom: "15px" },
   headerRight: { display: "flex", gap: "15px", alignItems: "center" },
-  title: { fontSize: "28px", fontWeight: "bold", margin: 0, color: "#22c55e" },
-  subtitle: { marginBottom: "20px", color: "#94a3b8" },
-  userInfo: { color: "#CBD5F5", fontSize: "14px" },
-  card: { background: "#1E293B", padding: "20px", borderRadius: "12px", marginBottom: "20px", boxShadow: "0 4px 15px rgba(0,0,0,0.3)" },
-  cardHighlight: { background: "linear-gradient(135deg,#22c55e,#16a34a)", padding: "20px", borderRadius: "12px", color: "#fff", fontWeight: "bold", textAlign: "center", fontSize: "20px" },
-  gridCards: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: "15px", marginBottom: "20px" },
+  title: { fontSize: "24px", fontWeight: "bold", margin: 0, color: "#22c55e" },
+  subtitle: { marginBottom: "20px", color: "#94a3b8", fontSize: "18px" },
+  userInfo: { color: "#94a3b8", fontSize: "13px" },
+  loading: { background: "#0F172A", height: "100vh", color: "#22c55e", display: "flex", justifyContent: "center", alignItems: "center", fontSize: "20px" },
+  card: { background: "#1E293B", padding: "20px", borderRadius: "12px", marginBottom: "20px", boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)" },
+  cardCenter: { background: "#1E293B", padding: "40px", borderRadius: "16px", textAlign: "center", maxWidth: "400px", margin: "100px auto" },
+  cardHighlight: { background: "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)", padding: "20px", borderRadius: "12px", color: "#fff", fontWeight: "bold", textAlign: "center", fontSize: "22px" },
+  cardSimple: { background: "#1E293B", padding: "15px", borderRadius: "12px", borderLeft: "4px solid", textAlign: "center", fontSize: "16px" },
+  gridCards: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "15px", marginBottom: "25px" },
   rowLayout: { display: "flex", gap: "20px", flexWrap: "wrap", marginBottom: "20px" },
-  input: { width: "100%", padding: "12px", margin: "8px 0", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", outline: "none", boxSizing: "border-box" },
-  inputBusca: { padding: "8px 15px", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", outline: "none", width: "250px" },
-  btnPrimary: { background: "#22c55e", color: "#fff", border: "none", padding: "12px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold", width: "100%" },
-  btnSec: { background: "#475569", color: "#fff", border: "none", padding: "12px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold", width: "40%" },
-  btnSair: { background: "#ef4444", color: "#fff", border: "none", padding: "8px 15px", borderRadius: "8px", cursor: "pointer" },
-  gridInputs: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: "10px" },
-  row: { display: "flex", gap: "10px", alignItems: "center", marginTop: "10px" },
-  headerList: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px", flexWrap: "wrap", gap: "10px" },
-  rankingItem: { display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #334155" },
+  input: { width: "100%", padding: "12px", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", outline: "none", fontSize: "14px" },
+  inputBusca: { padding: "8px 15px", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", width: "200px" },
+  btnPrimary: { background: "#22c55e", color: "#fff", border: "none", padding: "12px 24px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold", transition: "0.2s" },
+  btnSec: { background: "#475569", color: "#fff", border: "none", padding: "12px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold" },
+  btnSair: { background: "#ef4444", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
+  gridInputs: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "12px", marginBottom: "15px" },
+  row: { display: "flex", gap: "10px", marginTop: "10px" },
+  headerList: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" },
+  rankingItem: { display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #334155" },
   tableResponsive: { overflowX: "auto" },
-  table: { width: "100%", borderCollapse: "collapse", marginTop: "10px" },
-  th: { textAlign: "left", padding: "12px", borderBottom: "2px solid #334155", color: "#94a3b8", fontSize: "14px" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: "12px", borderBottom: "2px solid #334155", color: "#94a3b8", fontSize: "13px", textTransform: "uppercase" },
   td: { padding: "12px", borderBottom: "1px solid #334155", fontSize: "14px" },
-  tr: { transition: "0.2s" },
-  btnActionEdit: { background: "none", border: "none", cursor: "pointer", marginRight: "10px", fontSize: "16px" },
-  btnActionDel: { background: "none", border: "none", cursor: "pointer", fontSize: "16px" },
-  listItem: { padding: "10px 0", borderBottom: "1px solid #334155" }
+  tr: { hover: { background: "#2D3748" } },
+  btnActionEdit: { background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "5px" },
+  btnActionDel: { background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "5px" },
+  listItem: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px", borderBottom: "1px solid #334155" }
 };
