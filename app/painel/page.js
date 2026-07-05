@@ -1,43 +1,55 @@
-"use client"
+"use client";
 
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import useAuth from "../hooks/useAuth";
-
 import { db, auth } from "../../firebase";
-import { 
-  collection, addDoc, getDocs, query, where, doc, deleteDoc, updateDoc 
-} from "firebase/firestore";
-
-import { signOut } from "firebase/auth";
-
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
-} from "recharts";
+  collection,
+  addDoc,
+  getDocs,
+  query,
+  where,
+  doc,
+  deleteDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { Button, Card, Input, Select, Badge, Modal, EmptyState } from "../components/ui";
+import { detectarDuplicidade } from "../../lib/duplicidade";
+
+const MATERIAIS = [
+  { chave: "plastico", rotulo: "Plástico", emoji: "🧴", cor: "#3b82f6" },
+  { chave: "aluminio", rotulo: "Alumínio", emoji: "🥫", cor: "#f59e0b" },
+  { chave: "frasco", rotulo: "Frasco de perfume", emoji: "🌸", cor: "#10b981" },
+];
 
 export default function Painel() {
   const { user, loading } = useAuth();
   const router = useRouter();
 
-  const [mounted, setMounted] = useState(false);
   const [turma, setTurma] = useState(null);
   const [nomeTurma, setNomeTurma] = useState("");
+  const [carregandoTurma, setCarregandoTurma] = useState(true);
+
   const [alunos, setAlunos] = useState([]);
   const [novoAluno, setNovoAluno] = useState("");
   const [editandoAlunoId, setEditandoAlunoId] = useState(null);
 
-  const [alunoId, setAlunoId] = useState("");
-  const [plastico, setPlastico] = useState("");
-  const [aluminio, setAluminio] = useState("");
-  const [frasco, setFrasco] = useState("");
-
   const [registros, setRegistros] = useState([]);
   const [busca, setBusca] = useState("");
+  const [filtroDuplicidade, setFiltroDuplicidade] = useState("todos"); // todos | suspeitos
+
+  // Formulário de coleta
+  const [alunoId, setAlunoId] = useState("");
+  const [valores, setValores] = useState({ plastico: "", aluminio: "", frasco: "" });
   const [editandoId, setEditandoId] = useState(null);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  // Confirmação de possível duplicidade
+  const [confirmacaoDuplicidade, setConfirmacaoDuplicidade] = useState(null);
+  // Confirmação de exclusão
+  const [exclusaoPendente, setExclusaoPendente] = useState(null); // { tipo, id, label }
 
   useEffect(() => {
     if (!loading && !user) router.push("/login");
@@ -48,326 +60,587 @@ export default function Painel() {
   }, [user]);
 
   const carregarTurma = async () => {
+    setCarregandoTurma(true);
     try {
       const q = query(collection(db, "turmas"), where("professorId", "==", user.uid));
       const dados = await getDocs(q);
-
       if (!dados.empty) {
         const turmaData = { id: dados.docs[0].id, ...dados.docs[0].data() };
         setTurma(turmaData);
         await Promise.all([carregarAlunos(turmaData.id), carregarRegistros(turmaData.id)]);
       }
-    } catch (error) {
-      console.error("Erro ao carregar turma:", error);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCarregandoTurma(false);
     }
   };
 
-  const carregarAlunos = async (turmaId) => {
-    const q = query(collection(db, "alunos"), where("turmaId", "==", turmaId));
-    const dados = await getDocs(q);
-    setAlunos(dados.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  const carregarAlunos = async (id) => {
+    const q = query(collection(db, "alunos"), where("turmaId", "==", id));
+    const d = await getDocs(q);
+    setAlunos(d.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
   };
 
-  const carregarRegistros = async (turmaId) => {
-    const q = query(collection(db, "registros"), where("turmaId", "==", turmaId));
-    const dados = await getDocs(q);
-    setRegistros(dados.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  const carregarRegistros = async (id) => {
+    const q = query(collection(db, "registros"), where("turmaId", "==", id));
+    const d = await getDocs(q);
+    setRegistros(d.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
   };
 
-  // Funções de Gerenciamento de Alunos (CRUD)
+  const criarTurma = async () => {
+    if (!nomeTurma.trim()) return;
+    const dr = await addDoc(collection(db, "turmas"), {
+      nome: nomeTurma.trim(),
+      professorId: user.uid,
+      createdAt: Date.now(),
+    });
+    setTurma({ id: dr.id, nome: nomeTurma.trim(), professorId: user.uid });
+    setNomeTurma("");
+  };
+
+  // ---------- CRUD Alunos ----------
   const salvarAluno = async () => {
     if (!novoAluno.trim()) return;
     try {
       if (editandoAlunoId) {
-        await updateDoc(doc(db, "alunos", editandoAlunoId), { nome: novoAluno });
+        await updateDoc(doc(db, "alunos", editandoAlunoId), { nome: novoAluno.trim() });
         setEditandoAlunoId(null);
       } else {
         await addDoc(collection(db, "alunos"), {
-          nome: novoAluno,
-          turmaId: turma.id
+          nome: novoAluno.trim(),
+          turmaId: turma.id,
+          createdAt: Date.now(),
         });
       }
       setNovoAluno("");
       await carregarAlunos(turma.id);
-    } catch (e) {
+    } catch {
       alert("Erro ao salvar aluno.");
     }
   };
 
-  const deletarAluno = async (id) => {
-    if (confirm("Deseja remover este aluno? Os registros de coleta permanecerão no histórico.")) {
-      await deleteDoc(doc(db, "alunos", id));
-      await carregarAlunos(turma.id);
+  const confirmarExclusaoAluno = (aluno) =>
+    setExclusaoPendente({ tipo: "aluno", id: aluno.id, label: aluno.nome });
+
+  // ---------- CRUD Registros (coletas) ----------
+  const limparFormularioColeta = () => {
+    setEditandoId(null);
+    setAlunoId("");
+    setValores({ plastico: "", aluminio: "", frasco: "" });
+  };
+
+  const iniciarEdicaoRegistro = (reg) => {
+    setEditandoId(reg.id);
+    setAlunoId(reg.alunoId);
+    setValores({
+      plastico: String(reg.plastico ?? ""),
+      aluminio: String(reg.aluminio ?? ""),
+      frasco: String(reg.frasco ?? ""),
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const montarDadosRegistro = () => ({
+    alunoId,
+    turmaId: turma.id,
+    professorId: user.uid,
+    data: editandoId ? registros.find((r) => r.id === editandoId)?.data ?? Date.now() : Date.now(),
+    plastico: Number(valores.plastico) || 0,
+    aluminio: Number(valores.aluminio) || 0,
+    frasco: Number(valores.frasco) || 0,
+  });
+
+  const tentarSalvarColeta = () => {
+    if (!alunoId) return alert("Selecione um aluno.");
+    const dados = montarDadosRegistro();
+    const duplicidade = detectarDuplicidade(dados, registros, editandoId);
+
+    if (duplicidade) {
+      setConfirmacaoDuplicidade({ dados, duplicidade });
+      return;
+    }
+    salvarColeta(dados, null);
+  };
+
+  const salvarColeta = async (dados, duplicidade) => {
+    const payload = {
+      ...dados,
+      suspeitaDuplicidade: duplicidade
+        ? { ...duplicidade, detectadaEm: Date.now(), revisado: false }
+        : null,
+    };
+    try {
+      if (editandoId) {
+        await updateDoc(doc(db, "registros", editandoId), payload);
+      } else {
+        await addDoc(collection(db, "registros"), payload);
+      }
+      limparFormularioColeta();
+      setConfirmacaoDuplicidade(null);
+      await carregarRegistros(turma.id);
+    } catch {
+      alert("Erro ao salvar a coleta.");
     }
   };
 
-  // Cálculos Otimizados com useMemo
+  const marcarComoRevisado = async (reg) => {
+    try {
+      await updateDoc(doc(db, "registros", reg.id), {
+        suspeitaDuplicidade: { ...reg.suspeitaDuplicidade, revisado: true },
+      });
+      await carregarRegistros(turma.id);
+    } catch {
+      alert("Erro ao atualizar o registro.");
+    }
+  };
+
+  const confirmarExclusaoRegistro = (reg) => {
+    const nomeAluno = alunos.find((a) => a.id === reg.alunoId)?.nome || "aluno removido";
+    setExclusaoPendente({
+      tipo: "registro",
+      id: reg.id,
+      label: `coleta de ${nomeAluno} em ${new Date(reg.data).toLocaleDateString("pt-BR")}`,
+    });
+  };
+
+  const executarExclusao = async () => {
+    if (!exclusaoPendente) return;
+    const { tipo, id } = exclusaoPendente;
+    try {
+      if (tipo === "aluno") {
+        await deleteDoc(doc(db, "alunos", id));
+        await carregarAlunos(turma.id);
+      } else if (tipo === "registro") {
+        await deleteDoc(doc(db, "registros", id));
+        if (editandoId === id) limparFormularioColeta();
+        await carregarRegistros(turma.id);
+      }
+    } catch {
+      alert("Erro ao excluir.");
+    } finally {
+      setExclusaoPendente(null);
+    }
+  };
+
+  // ---------- Derivados ----------
   const stats = useMemo(() => {
-    const p = registros.reduce((a, b) => a + (Number(b.plastico) || 0), 0);
-    const al = registros.reduce((a, b) => a + (Number(b.aluminio) || 0), 0);
-    const f = registros.reduce((a, b) => a + (Number(b.frasco) || 0), 0);
-    return { p, al, f, total: p + al + f };
+    const totais = MATERIAIS.reduce((acc, m) => {
+      acc[m.chave] = registros.reduce((s, r) => s + (Number(r[m.chave]) || 0), 0);
+      return acc;
+    }, {});
+    const total = MATERIAIS.reduce((s, m) => s + totais[m.chave], 0);
+    return { ...totais, total };
   }, [registros]);
 
   const ranking = useMemo(() => {
-    return alunos.map(aluno => {
-      const total = registros
-        .filter(r => r.alunoId === aluno.id)
-        .reduce((s, r) => s + (Number(r.plastico) || 0) + (Number(r.aluminio) || 0) + (Number(r.frasco) || 0), 0);
-      return { nome: aluno.nome, total };
-    }).sort((a, b) => b.total - a.total);
+    return alunos
+      .map((aluno) => {
+        const total = registros
+          .filter((r) => r.alunoId === aluno.id)
+          .reduce(
+            (s, r) => s + (Number(r.plastico) || 0) + (Number(r.aluminio) || 0) + (Number(r.frasco) || 0),
+            0
+          );
+        return { nome: aluno.nome, total };
+      })
+      .sort((a, b) => b.total - a.total);
   }, [alunos, registros]);
 
   const registrosFiltrados = useMemo(() => {
-    return registros.filter(reg => {
-      const nomeAluno = alunos.find(a => a.id === reg.alunoId)?.nome || "Removido";
-      return nomeAluno.toLowerCase().includes(busca.toLowerCase());
-    }).reverse();
-  }, [registros, alunos, busca]);
+    return registros
+      .filter((reg) => {
+        const nome = alunos.find((a) => a.id === reg.alunoId)?.nome || "Removido";
+        const combinaBusca = nome.toLowerCase().includes(busca.toLowerCase());
+        const combinaFiltro =
+          filtroDuplicidade === "todos" ||
+          (reg.suspeitaDuplicidade && !reg.suspeitaDuplicidade.revisado);
+        return combinaBusca && combinaFiltro;
+      })
+      .sort((a, b) => new Date(b.data) - new Date(a.data));
+  }, [registros, alunos, busca, filtroDuplicidade]);
 
-  const registrarOuEditarColeta = async () => {
-    if (!alunoId) return alert("Selecione um aluno");
-    const dados = {
-      alunoId,
-      turmaId: turma.id,
-      professorId: user.uid,
-      data: editandoId ? registros.find(r => r.id === editandoId).data : Date.now(),
-      plastico: Number(plastico) || 0,
-      aluminio: Number(aluminio) || 0,
-      frasco: Number(frasco) || 0
-    };
+  const totalSuspeitos = useMemo(
+    () => registros.filter((r) => r.suspeitaDuplicidade && !r.suspeitaDuplicidade.revisado).length,
+    [registros]
+  );
 
-    try {
-      if (editandoId) {
-        await updateDoc(doc(db, "registros", editandoId), dados);
-        setEditandoId(null);
-      } else {
-        await addDoc(collection(db, "registros"), dados);
-      }
-      setPlastico(""); setAluminio(""); setFrasco(""); setAlunoId("");
-      await carregarRegistros(turma.id);
-    } catch (e) {
-      alert("Erro ao salvar coleta.");
-    }
-  };
-
-  const sair = async () => {
-    await signOut(auth);
-    router.push("/login");
-  };
-
-  if (!mounted) return null;
-  if (loading) return <div style={styles.loading}>Carregando EcoGestão...</div>;
+  if (loading || carregandoTurma) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-green-400">
+        Carregando EcoGestão...
+      </div>
+    );
+  }
 
   return (
-    <div style={styles.container}>
-      <header style={styles.header}>
-        <h1 style={styles.title}>🌎 EcoGestão Escolar</h1>
-        <div style={styles.headerRight}>
-          <span style={styles.userInfo}>👨‍🏫 {user?.email}</span>
-          <button style={styles.btnSair} onClick={sair}>Sair</button>
+    <div className="min-h-screen bg-slate-950 text-white pb-16">
+      {/* Header */}
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/95 backdrop-blur px-4 sm:px-6 py-3">
+        <h1 className="text-base sm:text-lg font-bold text-green-400 flex items-center gap-2">
+          🌎 <span className="hidden sm:inline">EcoGestão Escolar</span>
+          <span className="sm:hidden">EcoGestão</span>
+        </h1>
+        <div className="flex items-center gap-3">
+          <span className="hidden md:inline text-xs text-slate-400">👨‍🏫 {user?.email}</span>
+          <Button variant="danger" onClick={() => signOut(auth)} className="!px-3 !py-1.5 text-xs">
+            Sair
+          </Button>
         </div>
       </header>
 
-      {!turma ? (
-        <div style={styles.cardCenter}>
-          <h2>Bem-vindo, Professor!</h2>
-          <p>Crie sua primeira turma para começar o projeto.</p>
-          <input 
-            style={styles.input}
-            placeholder="Ex: 7º Ano A - 2026"
-            value={nomeTurma} 
-            onChange={(e) => setNomeTurma(e.target.value)} 
-          />
-          <button style={styles.btnPrimary} onClick={async () => {
-             if (!nomeTurma) return;
-             const docRef = await addDoc(collection(db, "turmas"), { nome: nomeTurma, professorId: user.uid });
-             setTurma({ id: docRef.id, nome: nomeTurma });
-          }}>Criar Turma</button>
-        </div>
-      ) : (
-        <>
-          <h2 style={styles.subtitle}>🏫 {turma.nome}</h2>
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {!turma ? (
+          <Card className="max-w-md mx-auto mt-16 text-center">
+            <h2 className="text-lg font-bold mb-4">Criar minha turma</h2>
+            <div className="space-y-3">
+              <Input
+                placeholder="Ex: 7º Ano A"
+                value={nomeTurma}
+                onChange={(e) => setNomeTurma(e.target.value)}
+              />
+              <Button className="w-full" onClick={criarTurma}>
+                Criar Turma
+              </Button>
+            </div>
+          </Card>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-slate-300 text-sm sm:text-base">🏫 {turma.nome}</h2>
+              {totalSuspeitos > 0 && (
+                <button
+                  onClick={() =>
+                    setFiltroDuplicidade(filtroDuplicidade === "todos" ? "suspeitos" : "todos")
+                  }
+                >
+                  <Badge tone="amber">
+                    ⚠️ {totalSuspeitos} possível{totalSuspeitos > 1 ? "eis" : ""} duplicidade
+                    {totalSuspeitos > 1 ? "s" : ""} —{" "}
+                    {filtroDuplicidade === "todos" ? "ver" : "ver todos"}
+                  </Badge>
+                </button>
+              )}
+            </div>
 
-          <section style={styles.gridCards}>
-            <div style={styles.cardHighlight}>♻️ Total Geral: {stats.total}</div>
-            <div style={{...styles.cardSimple, borderColor: "#3b82f6"}}>🧴 Plástico: {stats.p}</div>
-            <div style={{...styles.cardSimple, borderColor: "#f59e0b"}}>🥫 Alumínio: {stats.al}</div>
-            <div style={{...styles.cardSimple, borderColor: "#10b981"}}>🌸 Frasco: {stats.f}</div>
-          </section>
+            {/* Cards de estatística */}
+            <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-gradient-to-br from-green-500 to-green-600 p-4 text-center">
+                <div className="text-2xl font-bold">{stats.total}</div>
+                <div className="text-xs opacity-90">Total Geral</div>
+              </div>
+              {MATERIAIS.map((m) => (
+                <div
+                  key={m.chave}
+                  className="rounded-xl bg-slate-800 border-l-4 p-4 text-center"
+                  style={{ borderColor: m.cor }}
+                >
+                  <div className="text-xl font-bold">{stats[m.chave]}</div>
+                  <div className="text-xs text-slate-400">
+                    {m.emoji} {m.rotulo}
+                  </div>
+                </div>
+              ))}
+            </section>
 
-          <div style={styles.rowLayout}>
-            <div style={{ flex: 2 }}>
-              <div style={styles.card}>
-                <h3>📊 Materiais Coletados</h3>
-                <div style={{ width: '100%', height: 250 }}>
+            <div className="grid lg:grid-cols-3 gap-4">
+              <Card className="lg:col-span-2">
+                <h3 className="font-semibold mb-3">📊 Materiais</h3>
+                <div style={{ height: 220 }}>
                   <ResponsiveContainer>
-                    <BarChart data={[
-                      { nome: "Plástico", valor: stats.p, color: "#3b82f6" },
-                      { nome: "Alumínio", valor: stats.al, color: "#f59e0b" },
-                      { nome: "Frasco", valor: stats.f, color: "#10b981" }
-                    ]}>
-                      <XAxis dataKey="nome" stroke="#94a3b8" />
-                      <YAxis stroke="#94a3b8" />
-                      <Tooltip contentStyle={{ backgroundColor: '#1E293B', border: 'none', borderRadius: '8px' }} />
-                      <Bar dataKey="valor" radius={[4, 4, 0, 0]}>
-                        {[1, 2, 3].map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={["#3b82f6", "#f59e0b", "#10b981"][index]} />
+                    <BarChart data={MATERIAIS.map((m) => ({ n: m.rotulo, v: stats[m.chave] }))}>
+                      <XAxis dataKey="n" stroke="#94a3b8" fontSize={12} />
+                      <YAxis stroke="#94a3b8" width={28} fontSize={12} />
+                      <Tooltip contentStyle={{ background: "#1e293b", border: "none" }} />
+                      <Bar dataKey="v" radius={[4, 4, 0, 0]}>
+                        {MATERIAIS.map((m, i) => (
+                          <Cell key={i} fill={m.cor} />
                         ))}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-              </div>
-            </div>
-            
-            <div style={{ flex: 1 }}>
-              <div style={styles.card}>
-                <h3>🏆 Top 5 Alunos</h3>
-                {ranking.slice(0, 5).map((r, i) => (
-                  <div key={i} style={styles.rankingItem}>
-                    <span>{i + 1}º {r.nome}</span>
-                    <strong style={{color: '#22c55e'}}>{r.total}</strong>
+              </Card>
+
+              <Card>
+                <h3 className="font-semibold mb-3">🏆 Ranking</h3>
+                {ranking.length === 0 ? (
+                  <EmptyState icon="🏆" title="Cadastre alunos para ver o ranking" />
+                ) : (
+                  <div className="space-y-2">
+                    {ranking.slice(0, 5).map((r, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between border-b border-slate-700 pb-2 text-sm last:border-0 last:pb-0"
+                      >
+                        <span className="text-slate-300">
+                          {i + 1}º {r.nome.split(" ")[0]}
+                        </span>
+                        <strong className="text-green-400">{r.total}</strong>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+              </Card>
             </div>
-          </div>
 
-          <div style={styles.card}>
-            <h3>{editandoId ? "📝 Editar Registro" : "♻️ Registrar Nova Coleta"}</h3>
-            <div style={styles.gridInputs}>
-              <select style={styles.input} onChange={(e) => setAlunoId(e.target.value)} value={alunoId}>
-                <option value="">Selecione o aluno</option>
-                {alunos.sort((a,b) => a.nome.localeCompare(b.nome)).map(a => (
-                  <option key={a.id} value={a.id}>{a.nome}</option>
-                ))}
-              </select>
-              <input style={styles.input} type="number" placeholder="Plástico" value={plastico} onChange={(e) => setPlastico(e.target.value)} />
-              <input style={styles.input} type="number" placeholder="Alumínio" value={aluminio} onChange={(e) => setAluminio(e.target.value)} />
-              <input style={styles.input} type="number" placeholder="Frasco" value={frasco} onChange={(e) => setFrasco(e.target.value)} />
-            </div>
-            <div style={styles.row}>
-              <button style={styles.btnPrimary} onClick={registrarOuEditarColeta}>
-                {editandoId ? "Salvar Alterações" : "Confirmar Lançamento"}
-              </button>
-              {editandoId && <button style={styles.btnSec} onClick={() => {setEditandoId(null); setPlastico(""); setAluminio(""); setFrasco(""); setAlunoId("");}}>Cancelar</button>}
-            </div>
-          </div>
-
-          <div style={styles.card}>
-            <div style={styles.headerList}>
-              <h3>📑 Histórico Recente</h3>
-              <input 
-                style={styles.inputBusca} 
-                placeholder="🔍 Buscar aluno..." 
-                value={busca}
-                onChange={(e) => setBusca(e.target.value)}
-              />
-            </div>
-            <div style={styles.tableResponsive}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Data</th>
-                    <th style={styles.th}>Aluno</th>
-                    <th style={styles.th}>P</th>
-                    <th style={styles.th}>A</th>
-                    <th style={styles.th}>F</th>
-                    <th style={{...styles.th, textAlign: 'center'}}>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {registrosFiltrados.map((reg) => (
-                    <tr key={reg.id} style={styles.tr}>
-                      <td style={{...styles.td, color: "#94a3b8"}}>{new Date(reg.data).toLocaleDateString('pt-BR')}</td>
-                      <td style={styles.td}>{alunos.find(a => a.id === reg.alunoId)?.nome || "Removido"}</td>
-                      <td style={styles.td}>{reg.plastico}</td>
-                      <td style={styles.td}>{reg.aluminio}</td>
-                      <td style={styles.td}>{reg.frasco}</td>
-                      <td style={{...styles.td, textAlign: 'center'}}>
-                        <button style={styles.btnActionEdit} onClick={() => {
-                           setEditandoId(reg.id);
-                           setAlunoId(reg.alunoId);
-                           setPlastico(reg.plastico);
-                           setAluminio(reg.aluminio);
-                           setFrasco(reg.frasco);
-                           window.scrollTo({ top: 400, behavior: 'smooth' });
-                        }}>✏️</button>
-                        <button style={styles.btnActionDel} onClick={async () => {
-                           if(confirm("Excluir registro?")) {
-                             await deleteDoc(doc(db, "registros", reg.id));
-                             carregarRegistros(turma.id);
-                           }
-                        }}>🗑️</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div style={styles.card}>
-            <h3>👨‍🎓 Gestão de Alunos</h3>
-            <div style={styles.row}>
-              <input 
-                style={styles.input}
-                placeholder="Nome completo do aluno"
-                value={novoAluno} 
-                onChange={(e) => setNovoAluno(e.target.value)} 
-              />
-              <button style={styles.btnPrimary} onClick={salvarAluno}>
-                {editandoAlunoId ? "Atualizar" : "Cadastrar"}
-              </button>
-            </div>
-            <div style={{maxHeight: '200px', overflowY: 'auto', marginTop: '15px'}}>
-              {alunos.sort((a,b) => a.nome.localeCompare(b.nome)).map(a => (
-                <div key={a.id} style={styles.listItem}>
-                  <span>{a.nome}</span>
-                  <div>
-                    <button style={styles.btnActionEdit} onClick={() => {setEditandoAlunoId(a.id); setNovoAluno(a.nome);}}>✏️</button>
-                    <button style={styles.btnActionDel} onClick={() => deletarAluno(a.id)}>🗑️</button>
-                  </div>
+            {/* Lançamento de coleta */}
+            <Card>
+              <h3 className="font-semibold mb-4">
+                {editandoId ? "📝 Editar Coleta" : "♻️ Nova Coleta"}
+              </h3>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+                <div className="lg:col-span-2">
+                  <Select
+                    label="Aluno"
+                    value={alunoId}
+                    onChange={(e) => setAlunoId(e.target.value)}
+                  >
+                    <option value="">Selecionar aluno</option>
+                    {[...alunos]
+                      .sort((a, b) => a.nome.localeCompare(b.nome))
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.nome}
+                        </option>
+                      ))}
+                  </Select>
                 </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
+                {MATERIAIS.map((m) => (
+                  <Input
+                    key={m.chave}
+                    label={`${m.emoji} ${m.rotulo}`}
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={valores[m.chave]}
+                    onChange={(e) => setValores((v) => ({ ...v, [m.chave]: e.target.value }))}
+                  />
+                ))}
+              </div>
+              <div className="flex gap-2 mt-4">
+                <Button onClick={tentarSalvarColeta}>{editandoId ? "Atualizar" : "Lançar"}</Button>
+                {editandoId && (
+                  <Button variant="secondary" onClick={limparFormularioColeta}>
+                    Cancelar
+                  </Button>
+                )}
+              </div>
+            </Card>
+
+            {/* Histórico */}
+            <Card>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                <h3 className="font-semibold">📑 Histórico de coletas</h3>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="🔍 Buscar aluno..."
+                    value={busca}
+                    onChange={(e) => setBusca(e.target.value)}
+                    className="sm:w-56"
+                  />
+                  <Select
+                    value={filtroDuplicidade}
+                    onChange={(e) => setFiltroDuplicidade(e.target.value)}
+                    className="sm:w-44"
+                  >
+                    <option value="todos">Todos registros</option>
+                    <option value="suspeitos">Só suspeitos</option>
+                  </Select>
+                </div>
+              </div>
+
+              {registrosFiltrados.length === 0 ? (
+                <EmptyState
+                  icon="♻️"
+                  title="Nenhum registro encontrado"
+                  subtitle="Ajuste os filtros ou lance a primeira coleta acima."
+                />
+              ) : (
+                <div className="overflow-x-auto -mx-4 sm:mx-0">
+                  <table className="w-full text-sm min-w-[560px]">
+                    <thead>
+                      <tr className="text-left text-slate-400 text-xs border-b border-slate-700">
+                        <th className="py-2 px-4 sm:px-2">Data</th>
+                        <th className="py-2 px-2">Aluno</th>
+                        <th className="py-2 px-2">🧴</th>
+                        <th className="py-2 px-2">🥫</th>
+                        <th className="py-2 px-2">🌸</th>
+                        <th className="py-2 px-2">Status</th>
+                        <th className="py-2 px-2 text-center">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {registrosFiltrados.map((reg) => {
+                        const nomeAluno = alunos.find((a) => a.id === reg.alunoId)?.nome || "Removido";
+                        const suspeita = reg.suspeitaDuplicidade;
+                        return (
+                          <tr key={reg.id} className="border-b border-slate-800 last:border-0">
+                            <td className="py-2.5 px-4 sm:px-2 text-slate-400 whitespace-nowrap">
+                              {new Date(reg.data).toLocaleDateString("pt-BR", {
+                                day: "2-digit",
+                                month: "2-digit",
+                              })}
+                            </td>
+                            <td className="py-2.5 px-2">{nomeAluno.split(" ")[0]}</td>
+                            <td className="py-2.5 px-2">{reg.plastico}</td>
+                            <td className="py-2.5 px-2">{reg.aluminio}</td>
+                            <td className="py-2.5 px-2">{reg.frasco}</td>
+                            <td className="py-2.5 px-2">
+                              {suspeita && !suspeita.revisado ? (
+                                <button onClick={() => marcarComoRevisado(reg)} title="Marcar como revisado">
+                                  <Badge tone={suspeita.nivel === "forte" ? "red" : "amber"}>
+                                    ⚠️ {suspeita.nivel === "forte" ? "Duplicidade" : "Verificar"}
+                                  </Badge>
+                                </button>
+                              ) : suspeita?.revisado ? (
+                                <Badge tone="slate">Revisado</Badge>
+                              ) : (
+                                <Badge tone="green">OK</Badge>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-2 text-center whitespace-nowrap">
+                              <button
+                                className="mr-3"
+                                onClick={() => iniciarEdicaoRegistro(reg)}
+                                title="Editar"
+                              >
+                                ✏️
+                              </button>
+                              <button onClick={() => confirmarExclusaoRegistro(reg)} title="Excluir">
+                                🗑️
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+
+            {/* Gestão de alunos */}
+            <Card>
+              <h3 className="font-semibold mb-4">👨‍🎓 Gestão de Alunos</h3>
+              <div className="flex gap-2 mb-4">
+                <Input
+                  placeholder="Nome do aluno"
+                  value={novoAluno}
+                  onChange={(e) => setNovoAluno(e.target.value)}
+                  className="flex-1"
+                />
+                <Button onClick={salvarAluno} className="!px-5">
+                  {editandoAlunoId ? "Salvar" : "Adicionar"}
+                </Button>
+                {editandoAlunoId && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setEditandoAlunoId(null);
+                      setNovoAluno("");
+                    }}
+                  >
+                    X
+                  </Button>
+                )}
+              </div>
+
+              {alunos.length === 0 ? (
+                <EmptyState icon="👨‍🎓" title="Nenhum aluno cadastrado ainda" />
+              ) : (
+                <div className="max-h-64 overflow-y-auto space-y-1">
+                  {[...alunos]
+                    .sort((a, b) => a.nome.localeCompare(b.nome))
+                    .map((a) => (
+                      <div
+                        key={a.id}
+                        className="flex items-center justify-between border-b border-slate-800 py-2 text-sm last:border-0"
+                      >
+                        <span>{a.nome}</span>
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => {
+                              setEditandoAlunoId(a.id);
+                              setNovoAluno(a.nome);
+                            }}
+                            title="Editar"
+                          >
+                            ✏️
+                          </button>
+                          <button onClick={() => confirmarExclusaoAluno(a)} title="Excluir">
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </Card>
+          </>
+        )}
+      </main>
+
+      {/* Modal: possível duplicidade */}
+      <Modal
+        open={!!confirmacaoDuplicidade}
+        onClose={() => setConfirmacaoDuplicidade(null)}
+        title="⚠️ Possível registro duplicado"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmacaoDuplicidade(null)}>
+              Revisar antes
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() =>
+                salvarColeta(confirmacaoDuplicidade.dados, confirmacaoDuplicidade.duplicidade)
+              }
+            >
+              Salvar mesmo assim
+            </Button>
+          </>
+        }
+      >
+        {confirmacaoDuplicidade && (
+          <p>
+            Encontramos {confirmacaoDuplicidade.duplicidade.ocorrencias} outro(s) registro(s) para{" "}
+            <strong className="text-white">
+              {alunos.find((a) => a.id === alunoId)?.nome || "este aluno"}
+            </strong>{" "}
+            no mesmo dia
+            {confirmacaoDuplicidade.duplicidade.nivel === "forte"
+              ? " com exatamente os mesmos valores"
+              : ", com valores diferentes"}
+            . O registro não será apagado — ele apenas ficará marcado como suspeito no histórico
+            para você (ou o administrador) revisar depois.
+          </p>
+        )}
+      </Modal>
+
+      {/* Modal: confirmação de exclusão */}
+      <Modal
+        open={!!exclusaoPendente}
+        onClose={() => setExclusaoPendente(null)}
+        title="Confirmar exclusão"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setExclusaoPendente(null)}>
+              Cancelar
+            </Button>
+            <Button variant="danger" onClick={executarExclusao}>
+              Excluir
+            </Button>
+          </>
+        }
+      >
+        {exclusaoPendente && (
+          <p>
+            Tem certeza que deseja excluir <strong className="text-white">{exclusaoPendente.label}</strong>?
+            Esta ação não pode ser desfeita.
+          </p>
+        )}
+      </Modal>
     </div>
   );
 }
-
-const styles = {
-  container: { background: "#0F172A", minHeight: "100vh", padding: "20px", color: "#fff", fontFamily: "'Inter', sans-serif" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px", borderBottom: "1px solid #1E293B", paddingBottom: "15px" },
-  headerRight: { display: "flex", gap: "15px", alignItems: "center" },
-  title: { fontSize: "24px", fontWeight: "bold", margin: 0, color: "#22c55e" },
-  subtitle: { marginBottom: "20px", color: "#94a3b8", fontSize: "18px" },
-  userInfo: { color: "#94a3b8", fontSize: "13px" },
-  loading: { background: "#0F172A", height: "100vh", color: "#22c55e", display: "flex", justifyContent: "center", alignItems: "center", fontSize: "20px" },
-  card: { background: "#1E293B", padding: "20px", borderRadius: "12px", marginBottom: "20px", boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)" },
-  cardCenter: { background: "#1E293B", padding: "40px", borderRadius: "16px", textAlign: "center", maxWidth: "400px", margin: "100px auto" },
-  cardHighlight: { background: "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)", padding: "20px", borderRadius: "12px", color: "#fff", fontWeight: "bold", textAlign: "center", fontSize: "22px" },
-  cardSimple: { background: "#1E293B", padding: "15px", borderRadius: "12px", borderLeft: "4px solid", textAlign: "center", fontSize: "16px" },
-  gridCards: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "15px", marginBottom: "25px" },
-  rowLayout: { display: "flex", gap: "20px", flexWrap: "wrap", marginBottom: "20px" },
-  input: { width: "100%", padding: "12px", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", outline: "none", fontSize: "14px" },
-  inputBusca: { padding: "8px 15px", borderRadius: "8px", border: "1px solid #334155", background: "#0F172A", color: "#fff", width: "200px" },
-  btnPrimary: { background: "#22c55e", color: "#fff", border: "none", padding: "12px 24px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold", transition: "0.2s" },
-  btnSec: { background: "#475569", color: "#fff", border: "none", padding: "12px 20px", borderRadius: "8px", cursor: "pointer", fontWeight: "bold" },
-  btnSair: { background: "#ef4444", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" },
-  gridInputs: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "12px", marginBottom: "15px" },
-  row: { display: "flex", gap: "10px", marginTop: "10px" },
-  headerList: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" },
-  rankingItem: { display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #334155" },
-  tableResponsive: { overflowX: "auto" },
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: "12px", borderBottom: "2px solid #334155", color: "#94a3b8", fontSize: "13px", textTransform: "uppercase" },
-  td: { padding: "12px", borderBottom: "1px solid #334155", fontSize: "14px" },
-  tr: { hover: { background: "#2D3748" } },
-  btnActionEdit: { background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "5px" },
-  btnActionDel: { background: "none", border: "none", cursor: "pointer", fontSize: "16px", padding: "5px" },
-  listItem: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px", borderBottom: "1px solid #334155" }
-};

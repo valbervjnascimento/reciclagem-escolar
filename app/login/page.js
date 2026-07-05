@@ -1,139 +1,165 @@
-"use client"
+"use client";
 
 import { useState } from "react";
 import { auth } from "../../firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Button, Input, Modal } from "../components/ui";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+  const [entrando, setEntrando] = useState(false);
   const router = useRouter();
 
+  // Estado do modal "Esqueci minha senha"
+  const [modalAberto, setModalAberto] = useState(false);
+  const [emailRecuperacao, setEmailRecuperacao] = useState("");
+  const [statusRecuperacao, setStatusRecuperacao] = useState(null); // "enviando" | "enviado"
+
   const login = async () => {
+    setErro("");
+    if (!email || !senha) {
+      setErro("Preencha e-mail e senha.");
+      return;
+    }
+    setEntrando(true);
     try {
       await signInWithEmailAndPassword(auth, email, senha);
       router.push("/painel");
-    } catch (e) {
-      alert("Erro no login: Verifique suas credenciais.");
+    } catch {
+      setErro("Não foi possível entrar. Verifique seu e-mail e senha.");
+    } finally {
+      setEntrando(false);
     }
   };
 
+  const enviarRecuperacao = async () => {
+    if (!emailRecuperacao) return;
+    setStatusRecuperacao("enviando");
+    try {
+      await sendPasswordResetEmail(auth, emailRecuperacao);
+      setStatusRecuperacao("enviado");
+    } catch {
+      // Por segurança não revelamos se o e-mail existe ou não: mesma
+      // mensagem de sucesso em qualquer caso.
+      setStatusRecuperacao("enviado");
+    }
+  };
+
+  const fecharModal = () => {
+    setModalAberto(false);
+    setEmailRecuperacao("");
+    setStatusRecuperacao(null);
+  };
+
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.headerSection}>
-          <h1 style={styles.emoji}>🌎</h1>
-          <h1 style={styles.title}>EcoGestão</h1>
-          <p style={styles.subtitle}>Portal do Professor</p>
-        </div>
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4 py-10">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-800 p-8 sm:p-10 shadow-2xl text-center">
+        <span className="block text-5xl mb-2">🌎</span>
+        <h1 className="text-2xl font-bold text-white">EcoGestão</h1>
+        <p className="text-slate-400 text-sm mt-1 mb-8">Portal do Professor</p>
 
-        <div style={styles.form}>
-          <label style={styles.label}>E-mail</label>
-          <input 
-            style={styles.input}
+        <form
+          className="space-y-4 text-left"
+          onSubmit={(e) => {
+            e.preventDefault();
+            login();
+          }}
+        >
+          <Input
+            label="E-mail"
             type="email"
-            placeholder="professor@escola.com" 
+            placeholder="professor@escola.com"
+            value={email}
             onChange={(e) => setEmail(e.target.value)}
+            autoComplete="username"
           />
-
-          <label style={styles.label}>Senha</label>
-          <input 
-            style={styles.input}
-            type="password" 
-            placeholder="••••••••" 
+          <Input
+            label="Senha"
+            type="password"
+            placeholder="••••••••"
+            value={senha}
             onChange={(e) => setSenha(e.target.value)}
+            autoComplete="current-password"
           />
 
-          <button style={styles.btnPrimary} onClick={login}>
-            Entrar no Painel
-          </button>
-        </div>
+          {erro && (
+            <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              {erro}
+            </p>
+          )}
 
-        <p style={styles.footerText}>
-          Sistema de monitoramento de reciclagem escolar.
-        </p>
+          <Button type="submit" className="w-full" disabled={entrando}>
+            {entrando ? "Entrando..." : "Entrar no Painel"}
+          </Button>
+        </form>
+
+        <button
+          onClick={() => {
+            setEmailRecuperacao(email);
+            setModalAberto(true);
+          }}
+          className="mt-4 text-xs text-green-400 hover:text-green-300 hover:underline"
+        >
+          Esqueci minha senha
+        </button>
+
+        <div className="mt-8 pt-6 border-t border-slate-700 text-xs text-slate-500 space-y-1">
+          <p>Ainda não tem conta?</p>
+          <Link href="/cadastro" className="text-green-400 font-semibold hover:underline">
+            Criar conta de professor
+          </Link>
+        </div>
       </div>
+
+      <Modal
+        open={modalAberto}
+        onClose={fecharModal}
+        title="Recuperar senha"
+        footer={
+          statusRecuperacao === "enviado" ? (
+            <Button variant="secondary" onClick={fecharModal}>Fechar</Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={fecharModal}>Cancelar</Button>
+              <Button
+                onClick={enviarRecuperacao}
+                disabled={!emailRecuperacao || statusRecuperacao === "enviando"}
+              >
+                {statusRecuperacao === "enviando" ? "Enviando..." : "Enviar link"}
+              </Button>
+            </>
+          )
+        }
+      >
+        {statusRecuperacao === "enviado" ? (
+          <p>
+            Se <strong className="text-white">{emailRecuperacao}</strong> estiver cadastrado,
+            enviamos um link para redefinir a senha. Confira também a caixa de spam.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <p>
+              Informe o e-mail usado no cadastro. Enviaremos um link para você criar uma nova
+              senha.
+            </p>
+            <Input
+              type="email"
+              placeholder="professor@escola.com"
+              value={emailRecuperacao}
+              onChange={(e) => setEmailRecuperacao(e.target.value)}
+            />
+            <p className="text-[11px] text-slate-500">
+              Cadastrou com um e-mail errado ou não tem mais acesso a ele? Peça para o
+              administrador da escola corrigir seu e-mail ou gerar uma senha temporária para
+              você no Painel Administrativo.
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
-
-const styles = {
-  container: {
-    background: "#0F172A", // Fundo azul escuro profundo
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "20px",
-    fontFamily: "sans-serif",
-    color: "#fff"
-  },
-  card: {
-    background: "#1E293B", // Azul ardósia (mesmo dos cards do painel)
-    padding: "40px",
-    borderRadius: "16px",
-    width: "100%",
-    maxWidth: "400px",
-    boxShadow: "0 10px 25px rgba(0,0,0,0.5)",
-    textAlign: "center"
-  },
-  headerSection: {
-    marginBottom: "30px"
-  },
-  emoji: {
-    fontSize: "48px",
-    margin: "0 0 10px 0"
-  },
-  title: {
-    fontSize: "28px",
-    fontWeight: "bold",
-    margin: "0",
-    color: "#fff"
-  },
-  subtitle: {
-    color: "#94A3B8",
-    marginTop: "5px",
-    fontSize: "16px"
-  },
-  form: {
-    textAlign: "left"
-  },
-  label: {
-    display: "block",
-    marginBottom: "5px",
-    fontSize: "14px",
-    color: "#CBD5F5",
-    marginLeft: "4px"
-  },
-  input: {
-    width: "100%",
-    padding: "12px",
-    marginBottom: "20px",
-    borderRadius: "8px",
-    border: "1px solid #334155",
-    background: "#0F172A",
-    color: "#fff",
-    outline: "none",
-    fontSize: "16px",
-    boxSizing: "border-box" // Garante que o padding não quebre a largura
-  },
-  btnPrimary: {
-    background: "linear-gradient(135deg,#22c55e,#16a34a)", // Gradiente verde
-    color: "#fff",
-    border: "none",
-    padding: "14px",
-    borderRadius: "8px",
-    cursor: "pointer",
-    fontWeight: "bold",
-    fontSize: "16px",
-    width: "100%",
-    marginTop: "10px",
-    transition: "opacity 0.2s"
-  },
-  footerText: {
-    marginTop: "30px",
-    fontSize: "12px",
-    color: "#64748B"
-  }
-};
