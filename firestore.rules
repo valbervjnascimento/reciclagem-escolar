@@ -1,23 +1,4 @@
 rules_version = '2';
-
-// Regras de segurança do Firestore para o EcoGestão Escolar.
-//
-// Como aplicar:
-//   1. Instale a Firebase CLI: npm install -g firebase-tools
-//   2. firebase login
-//   3. firebase init firestore   (aponte para este arquivo)
-//   4. firebase deploy --only firestore:rules
-//
-// Ideia geral:
-//   - Qualquer usuário logado pode LER os dados (necessário para o painel
-//     e para o admin montarem listas de alunos/turmas).
-//   - Só o próprio professor (dono da turma) pode criar/editar/excluir os
-//     dados da sua turma, alunos e registros.
-//   - O e-mail listado em isAdmin() tem acesso total (mesmo papel do
-//     ADMIN_EMAILS usado no código).
-//
-// Ajuste a lista de e-mails administradores conforme necessário.
-
 service cloud.firestore {
   match /databases/{database}/documents {
 
